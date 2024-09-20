@@ -32,7 +32,9 @@ for (i, lam) in enumerate(lambdas):
     X[0] = np.random.normal(mu_0, sigma_0)
     for step in range(1, n_steps):
         X[step] = lam * X[step - 1] + eps[step - 1]
-    axes[i].title.set_text('\u039b' + " = " + str(lam) + ", \u03bc = " + str(mu_0) + ", \u03c3^2 = " + str(sigma_0))
+    axes[i].title.set_text('\u039b' + " = " + str(lam) +
+                           ", \u03bc = " + str(mu_0) +
+                           ", \u03c3^2 = " + str(sigma_0))
     axes[i].plot(np.arange(n_steps), X)
 
 fig.tight_layout()
