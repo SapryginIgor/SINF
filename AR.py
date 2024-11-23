@@ -25,7 +25,14 @@ class AR(Distribution):
         phi = self.params[1:]
         self._shape = torch.Size(shape)
         self.variance = sigma2 / (1 - (phi**2).sum())
-        self.register_buffer("const_log", torch.tensor(0.5*np.prod(shape)*np.log(2*np.pi*self.variance), dtype=torch.float64), persistent=False)
+        if len(phi) > 1:
+            raise NotImplementedError("No cov matrix")
+        else:
+            arr = np.arange(np.prod(shape))
+            cov_matrix = self.variance * np.power(phi[0], np.abs(arr[None] - arr[:, None]))
+            self.inv_cov_matrix = torch.tensor(np.linalg.inv(cov_matrix), dtype=torch.float32)
+            self.det_cov_matrix = np.linalg.det(cov_matrix)
+        self.register_buffer("const_log", torch.tensor(0.5*(np.prod(shape)*np.log(2*np.pi)+np.log(self.det_cov_matrix)) , dtype=torch.float64), persistent=False)
         # self.register_buffer("_log_z",
         #                      torch.tensor(0.5 * np.prod(shape) * np.log(2 * np.pi),
         #                                   dtype=torch.float64),
@@ -39,8 +46,11 @@ class AR(Distribution):
                     self._shape, inputs.shape[1:]
                 )
             )
+        # print(inputs[..., None, :].dtype)
+        # print(self.inv_cov_matrix.dtype)
         neg_energy = -0.5 * \
-            torchutils.sum_except_batch(inputs ** 2, num_batch_dims=1)
+                     torch.matmul(torch.matmul(inputs[..., None, :], self.inv_cov_matrix), inputs[...,None])
+                    # torchutils.sum_except_batch(inputs ** 2, num_batch_dims=1)
         # print(f"log prob is {neg_energy - self.const_log}")
         return neg_energy - self.const_log
 
