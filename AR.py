@@ -94,7 +94,10 @@ class AR(Distribution):
     def _sample(self, num_samples, context):
         if context is None:
             # return torch.randn(num_samples, *self._shape, device=self._log_z.device)
-            return sample_AR_p(np.prod(self._shape), params=self.params)
+            samples = torch.zeros((num_samples, np.prod(self._shape)), device = self.const_log.device)
+            for i in range(num_samples):
+                samples[i] = sample_AR_p(np.prod(self._shape), params=self.params)
+            return samples
         else:
             # # The value of the context is ignored, only its size and device are taken into account.
             # context_size = context.shape[0]
