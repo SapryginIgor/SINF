@@ -1,3 +1,4 @@
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from statsmodels.tsa.arima.model import ARIMA
@@ -14,7 +15,7 @@ np.random.seed(0)
 torch.manual_seed(0)
 
 n_samples=20
-num_iter = 100
+num_iter = 200
 traj_samples = 100
 
 q = 2
@@ -75,8 +76,8 @@ for i in range(num_iter):
     optimizer.zero_grad()
     y_true = AR_q.log_prob(inputs=train)
     y_pred = flow.log_prob(inputs=train)
-    # flow_loss = -flow.log_prob(inputs=train).mean()
-    flow_loss = KLD(y_pred, y_true)
+    flow_loss = -flow.log_prob(inputs=train).mean()
+    # flow_loss = KLD(y_pred, y_true)
     flow_loss.backward()
     optimizer.step()
     if (i+1) % 100 == 0:
@@ -84,14 +85,20 @@ for i in range(num_iter):
         # print(f"iteration: {i}, KLD loss: {KLD(ar_q_params, flow,n_samples,train)}")
 
 final_estimated_q_params = np.zeros((100,q+1))
-for k in range(100):
+
+distributions = np.zeros((n_samples, 1000))
+for k in range(1000):
     series = flow.sample(1).squeeze().detach().numpy()
-    model = ARIMA(list(series), order=(q,0,0))
-    model_fit = model.fit()
-    estimated_q_params = model_fit.params[q+1:0:-1]
-    final_estimated_q_params[k] = estimated_q_params
-
-
+    distributions[:,k] = series
+    # model = ARIMA(list(series), order=(q,0,0))
+    # model_fit = model.fit()
+    # estimated_q_params = model_fit.params[q+1:0:-1]
+    # final_estimated_q_params[k] = estimated_q_params
+fig, ax = plt.subplots(3,1)
+ax[0].hist(distributions[1])
+ax[1].hist(distributions[10])
+ax[2].hist(distributions[15])
+plt.show()
 # print(model_fit.summary())
 
 real_variance = compute_covariance(ar_q_params)
