@@ -4,8 +4,10 @@ import torch
 from statsmodels.tsa.arima.model import ARIMA
 from torch import optim
 from torch.nn import KLDivLoss
-
-from AR import sample_AR_p, AR, compute_covariance
+import seaborn as sns
+import statistics
+from AR import sample_AR_p, AR, compute_covariance, compute_big_cov_matrix
+from nflows.flows import MaskedAutoregressiveFlow
 from ARMAF import ARMaskedAutoregressiveFlow
 from scipy.stats import kstest
 from pingouin import multivariate_normality
@@ -15,11 +17,12 @@ np.random.seed(0)
 torch.manual_seed(0)
 
 n_samples=20
-num_iter = 200
+num_iter = 1000
 traj_samples = 100
 
 q = 2
 ar_q_params = torch.cat([torch.tensor([1.0]),(torch.rand(q) - 0.5)])
+print(compute_covariance(ar_q_params))
 sigma, phi = ar_q_params[0], ar_q_params[1:]
 variance = sigma**2/(1-(phi**2).sum())
 
@@ -41,29 +44,11 @@ def estimate_cov_matrix(flow, q, n_samples=50):
         gamma_est[i] = (samples[:,0]*samples[:,i]).mean()
     return gamma_est
 
-
-
-
-
-# def KLD(ar_q_params, flow, n_samples, trajectories):
-#     AR_q = AR(ar_q_params, [n_samples])
-#     Ps_log = torch.empty_like(trajectories)
-#     Qs_log = torch.empty_like(trajectories)
-#     for i,trajectory in enumerate(trajectories):
-#         Ps_log[i] = AR_q.log_prob(trajectory.unsqueeze(0))
-#         Qs_log[i] = flow.log_prob(trajectory.unsqueeze(0))
-#     KLD = (Ps_log.exp() * (Ps_log - Qs_log)).sum()
-#     return KLD
-
-
-
 p = 5
-# model_fit = train_ar_p(ar_q_params, p=p)
-# print(model_fit.summary())
-# ar_p_params = model_fit.params[p+1:0:-1]
+
 ar_p_params = torch.cat([torch.tensor([1.0]),(torch.rand(p) - 0.5)])
-flow = ARMaskedAutoregressiveFlow(AR_params=ar_p_params, features=n_samples, hidden_features=100, num_layers=3, num_blocks_per_layer=2)
-# flow = MaskedAutoregressiveFlow(features=n_samples, hidden_features=100, num_layers=3, num_blocks_per_layer=2)
+# flow = ARMaskedAutoregressiveFlow(AR_params=ar_p_params, features=n_samples, hidden_features=100, num_layers=3, num_blocks_per_layer=2)
+flow = MaskedAutoregressiveFlow(features=n_samples, hidden_features=100, num_layers=3, num_blocks_per_layer=2)
 optimizer = optim.Adam(flow.parameters())
 KLD = KLDivLoss(log_target=True, reduction='batchmean')
 # print(ar_1_params)
@@ -74,8 +59,8 @@ for i in range(num_iter):
         train[j] = sample_AR_p(n_samples, params=ar_q_params,p=q)
     # train = torch.stack([x[i:i+p+1] for i in range(len(x)-p)])
     optimizer.zero_grad()
-    y_true = AR_q.log_prob(inputs=train)
-    y_pred = flow.log_prob(inputs=train)
+    # y_true = AR_q.log_prob(inputs=train)
+    # y_pred = flow.log_prob(inputs=train)
     flow_loss = -flow.log_prob(inputs=train).mean()
     # flow_loss = KLD(y_pred, y_true)
     flow_loss.backward()
@@ -94,22 +79,35 @@ for k in range(1000):
     # model_fit = model.fit()
     # estimated_q_params = model_fit.params[q+1:0:-1]
     # final_estimated_q_params[k] = estimated_q_params
-fig, ax = plt.subplots(3,1)
-ax[0].hist(distributions[1])
-ax[1].hist(distributions[10])
-ax[2].hist(distributions[15])
-plt.show()
+fig, axs = plt.subplots(3,1)
+# ax[0].hist(distributions[1])
+# ax[1].hist(distributions[10])
+# ax[2].hist(distributions[15])
+# plt.show()
 # print(model_fit.summary())
 
-real_variance = compute_covariance(ar_q_params)
+real_variance = compute_big_cov_matrix(20, ar_q_params)[0][0]
 
-print("Estimated parameters are:", *list(final_estimated_q_params.mean(axis=0)))
-print("Real parameters are:", *list(ar_q_params.detach().numpy()))
+sns.kdeplot(distributions[1], color='b', ax=axs[0])
+sns.kdeplot(distributions[10], color='g', ax=axs[1])
+sns.kdeplot(distributions[15], color='r', ax=axs[2])
 
-estimated_cov = estimate_cov_matrix(flow,q)
-real_cov = compute_covariance(ar_q_params)
-print("Distance between covariance vectors is", np.linalg.norm(estimated_cov - real_cov.numpy()))
+axs[0].set(xlabel="variance=" + str(statistics.variance(distributions[1])))
+axs[1].set(xlabel="variance=" + str(statistics.variance(distributions[10])))
+axs[2].set(xlabel="variance=" + str(statistics.variance(distributions[15])))
 
-samples = flow.sample(100).detach().numpy()
-print(multivariate_normality(samples, 0.05))
+plt.tight_layout()
+plt.show()
+
+
+#
+# print("Estimated parameters are:", *list(final_estimated_q_params.mean(axis=0)))
+# print("Real parameters are:", *list(ar_q_params.detach().numpy()))
+#
+# estimated_cov = estimate_cov_matrix(flow,q)
+# real_cov = compute_covariance(ar_q_params)
+# print("Distance between covariance vectors is", np.linalg.norm(estimated_cov - real_cov.numpy()))
+#
+# samples = flow.sample(100).detach().numpy()
+# print(multivariate_normality(samples, 0.05))
 

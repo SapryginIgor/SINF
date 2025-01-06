@@ -28,7 +28,6 @@ def compute_covariance(ar_params):
         A[i][i+1] -= 1
     tmp = [-1]
     tmp += list(phi)
-    print(torch.tensor(tmp))
     A[p] = torch.tensor(tmp)
     B = torch.zeros(p+1)
     B[p] = -sigma2
@@ -43,17 +42,24 @@ def compute_big_cov_matrix(n, ar_params):
     phi = np.array(ar_params[1:])
     for i in range(p+1,n):
         big_gamma[i] = np.dot(phi, big_gamma[i-1:i-1-p:-1])
-    # if p == 1:
-    #     Vn = phi**(n-1)*gamma.item()
-    #     return Vn
-    # tmp = torch.concat([torch.eye(p-1), torch.zeros(p-1)], dim=1)
-    # A = torch.concat([phi[None], tmp], dim=0)
-    # An = torch.linalg.matrix_power(A, n)
-    # Vn = torch.matmul(An, gamma)
     arr = np.arange(n)
     dist_mtx = np.abs(arr[None] - arr[...,None])
-
     return torch.tensor(big_gamma)[dist_mtx]
+
+def true_log_density(params, inputs):
+    shape = inputs.shape[1:]
+    sigma2 = params[0]
+    phi = params[1:]
+    const =  (0.5 * np.prod(shape) * np.log(2 * np.pi * sigma2))
+    s = torch.zeros(inputs.shape[0])
+    last = torch.zeros((inputs.shape[0], phi.shape[0]))
+    for i in range(np.prod(shape)):
+        mu = (phi[None] * last).sum(dim=1)
+        s -= (inputs[..., i] - mu)**2/(2*sigma2)
+        last =  torch.roll(last, 1, dims=1)
+        last[:, 0] = inputs[:,i]
+    return s - const
+
 
 
 
@@ -63,17 +69,12 @@ class AR(Distribution):
 
     def __init__(self, params, shape):
         super().__init__()
-        # self.register_buffer("params", torch.tensor(params, dtype=torch.float64), persistent=False)
         self.params = params
         self._shape = torch.Size(shape)
         cov_matrix = compute_big_cov_matrix(np.prod(shape), params)
         self.inv_cov_matrix = torch.tensor(np.linalg.inv(cov_matrix), dtype=torch.float32)
         self.det_cov_matrix = np.linalg.det(cov_matrix)
         self.register_buffer("const_log", torch.tensor(0.5*(np.prod(shape)*np.log(2*np.pi)+np.log(self.det_cov_matrix)) , dtype=torch.float64), persistent=False)
-        # self.register_buffer("_log_z",
-        #                      torch.tensor(0.5 * np.prod(shape) * np.log(2 * np.pi),
-        #                                   dtype=torch.float64),
-        #                      persistent=False)
 
     def _log_prob(self, inputs, context):
         # Note: the context is ignored.
@@ -88,8 +89,13 @@ class AR(Distribution):
         neg_energy = -0.5 * \
                      torch.matmul(torch.matmul(inputs[..., None, :], self.inv_cov_matrix), inputs[...,None])
                     # torchutils.sum_except_batch(inputs ** 2, num_batch_dims=1)
-        # print(f"log prob is {neg_energy - self.const_log}")
-        return neg_energy - self.const_log
+        res = neg_energy - self.const_log
+        # test = torch.zeros(5)
+        # m = test < 0.5
+        expected = true_log_density(self.params, inputs).reshape(100,1,1)
+        # print(abs(res - expected))
+        assert torch.all(abs(res - expected) < 1)
+        return res
 
     def _sample(self, num_samples, context):
         if context is None:
@@ -99,12 +105,7 @@ class AR(Distribution):
                 samples[i] = sample_AR_p(np.prod(self._shape), params=self.params)
             return samples
         else:
-            # # The value of the context is ignored, only its size and device are taken into account.
-            # context_size = context.shape[0]
-            # samples = torch.randn(context_size * num_samples, *self._shape,
-            #                       device=context.device)
-            # return torchutils.split_leading_dim(samples, [context_size, num_samples])
-            raise NotImplementedError("No context is implied")
+            raise NotImplementedError("context support is not implemented yet")
 
     def _mean(self, context):
         if context is None:
