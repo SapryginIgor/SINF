@@ -1,3 +1,4 @@
+import math
 from importlib.metadata import distribution
 
 import matplotlib.pyplot as plt
@@ -80,7 +81,7 @@ for i in range(num_iter):
             plt.title('iteration {}'.format(i + 1))
             plt.show()
 
-test_iter = 1000
+test_iter = 100
 final_estimated_q_params = np.zeros((test_iter,q+1))
 
 distributions = np.zeros((n_samples, test_iter))
@@ -125,12 +126,13 @@ nbins = 100
 #minimum value element wise from both arrays
 flat_dist = distributions.flatten()
 flat_ar_dist = ar_distributions.numpy().flatten()
-min = np.min(np.minimum(flat_dist, flat_ar_dist))
+min = math.floor(np.min(np.minimum(flat_dist, flat_ar_dist)))
 #maximum value element wise from both arrays
-max = np.max(np.maximum(flat_dist, flat_ar_dist))
+max = math.ceil(np.max(np.maximum(flat_dist, flat_ar_dist)))
 #histogram is build with fixed min and max values
-hist1, bins = np.histogram(flat_dist,range=(min,max), bins=nbins)
-hist2, _ = np.histogram(flat_ar_dist,range=(min,max), bins=nbins)
+bins = np.linspace(min, max, max-min+1)
+hist1, _ = np.histogram(flat_dist, bins=bins, density=True)
+hist2, _ = np.histogram(flat_ar_dist, bins=bins, density=True)
 
 #makes sense to have only positive values
 diff = np.square(hist1 - hist2)
