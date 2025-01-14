@@ -4,6 +4,7 @@ from importlib.metadata import distribution
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from scipy import stats
 from statsmodels.tsa.arima.model import ARIMA
 from torch import optim
 from torch.nn import KLDivLoss
@@ -20,12 +21,12 @@ from myMAF import MyMaskedAutoregressiveFlow
 np.random.seed(0)
 torch.manual_seed(0)
 
-n_samples = 10
+n_samples = 5
 num_iter = 100
 traj_samples = 100
 
 q = 2
-ar_q_params = torch.cat([torch.tensor([1.0]),(torch.rand(q) - 0.5)])
+ar_q_params = torch.cat([torch.tensor([1.0]),(torch.rand(q) - 0.5)/2])
 print(compute_covariance(ar_q_params))
 sigma, phi = ar_q_params[0], ar_q_params[1:]
 
@@ -48,8 +49,14 @@ def estimate_cov_matrix(flow, q, n_samples=50):
 
 PLOT = False
 
-flow = MyMaskedAutoregressiveFlow(features=n_samples, hidden_features=100, num_layers=3, num_blocks_per_layer=2)
+p = 1
+ar_p_params = torch.cat([torch.tensor([1.0]),(torch.rand(p) - 0.5)/2])
+
+# flow = MyMaskedAutoregressiveFlow(features=n_samples, hidden_features=100, num_layers=3, num_blocks_per_layer=2)
+flow = ARMaskedAutoregressiveFlow(AR_params=ar_p_params, features=n_samples, hidden_features=100, num_layers=3, num_blocks_per_layer=2)
 optimizer = optim.Adam(flow.parameters())
+
+KLD = KLDivLoss(log_target=True, reduction='batchmean')
 
 AR_q = AR(ar_q_params, [n_samples])
 for i in range(num_iter):
@@ -58,34 +65,19 @@ for i in range(num_iter):
         train[j] = sample_AR_p(n_samples, params=ar_q_params,p=q)
     optimizer.zero_grad()
     flow_loss = -flow.log_prob(inputs=train).mean()
+    # y_true = AR_q.log_prob(inputs=train)
+    # y_pred = flow.log_prob(inputs=train)
+    # flow_loss = KLD(y_pred, y_true)
     flow_loss.backward()
     optimizer.step()
     if (i+1) % 100 == 0:
         print(f"iteration: {i}, loss: {flow_loss.data}")
-        if PLOT:
-            N = 100
-            xline = torch.linspace(-2, 2, N)
-            yline = torch.linspace(-2, 2, N)
-            xgrid, ygrid = torch.meshgrid(xline, yline)
-            xyinput = torch.cat([xgrid.reshape(-1, 1), ygrid.reshape(-1, 1)], dim=1)
 
-            with torch.no_grad():
-                tmp = flow.log_prob(xyinput).exp()
-                zgrid = tmp.reshape(N, N)
-
-            plt.contourf(xgrid.numpy(), ygrid.numpy(), zgrid.numpy())
-            train_samples = train.detach().numpy()  # Convert tensor to NumPy array
-            plt.xlim(xline.min().item(), xline.max().item())
-            plt.ylim(yline.min().item(), yline.max().item())
-            plt.scatter(train_samples[:, 0], train_samples[:, 1], color='red', s=5, label="Training Samples", alpha=0.8)
-            plt.title('iteration {}'.format(i + 1))
-            plt.show()
-
-test_iter = 100
+test_iter = 1000
 final_estimated_q_params = np.zeros((test_iter,q+1))
 
 distributions = np.zeros((n_samples, test_iter))
-ar_distributions = AR_q.sample(test_iter)
+ar_distributions = AR_q.sample(test_iter).detach().numpy().T
 for k in range(test_iter):
     series = flow.sample(1).squeeze().detach().numpy()
     distributions[:,k] = series
@@ -122,28 +114,49 @@ print("Distance between covariance vectors is", np.linalg.norm(estimated_cov - r
 samples = flow.sample(100).detach().numpy()
 print(multivariate_normality(samples, 0.05))
 
-nbins = 100
-#minimum value element wise from both arrays
-flat_dist = distributions.flatten()
-flat_ar_dist = ar_distributions.numpy().flatten()
-min = math.floor(np.min(np.minimum(flat_dist, flat_ar_dist)))
-#maximum value element wise from both arrays
-max = math.ceil(np.max(np.maximum(flat_dist, flat_ar_dist)))
-#histogram is build with fixed min and max values
-bins = np.linspace(min, max, max-min+1)
-hist1, _ = np.histogram(flat_dist, bins=bins, density=True)
-hist2, _ = np.histogram(flat_ar_dist, bins=bins, density=True)
+flow_kernel = stats.gaussian_kde(distributions)
+ar_kernel = stats.gaussian_kde(ar_distributions)
 
-#makes sense to have only positive values
-diff = np.square(hist1 - hist2)
-# plt.bar(bins[:-1],hist1,width=1)
-# plt.bar(bins[:-1],hist2,width=1)
-# plt.bar(bins[:-1],diff,width=1)
-fig2, axs2 = plt.subplots(3,1)
-axs2[0].bar(bins[:-1],hist1,width=1)
-axs2[1].bar(bins[:-1],hist2,width=1)
-axs2[2].bar(bins[:-1],diff,width=1)
-print(np.sqrt(np.sum(diff)))
-plt.show()
+
+mins = np.minimum(np.min(distributions, axis=1), np.min(ar_distributions, axis=1))
+maxs =  np.maximum(np.max(distributions, axis=1), np.max(ar_distributions, axis=1))
+fbounds = list(zip(mins, maxs))
+
+N = 15
+slices = tuple([slice(mi, ma, complex(N)) for mi, ma in zip(mins, maxs)])
+
+grid = np.mgrid[slices]
+points = grid.reshape(n_samples, -1)
+
+flow_values = flow_kernel(points)
+ar_values = ar_kernel(points)
+
+diff = np.max(np.abs(flow_values - ar_values))
+
+cell_area = np.prod((maxs-mins)/N)
+integral = np.sum(np.square(flow_values - ar_values))*cell_area
+print("max AR(q) density value:", np.max(ar_values))
+print("max diff:", diff)
+print("integral:", integral)
+
+if PLOT:
+    flow_z = np.reshape(flow_values.T, grid[0].shape)
+    ar_z = np.reshape(ar_values.T, grid[0].shape)
+
+    fig, axs = plt.subplots(2)
+
+    axs[0].imshow(np.rot90(flow_z), cmap=plt.cm.gist_earth_r,
+              extent=[mins[0], maxs[0], mins[1], maxs[1]])
+    axs[0].set_xlim([mins[0], maxs[0]])
+    axs[0].set_ylim([mins[1], maxs[1]])
+
+    axs[1].imshow(np.rot90(ar_z), cmap=plt.cm.gist_earth_r,
+                  extent=[mins[0], maxs[0], mins[1], maxs[1]])
+    axs[1].set_xlim([mins[0], maxs[0]])
+    axs[1].set_ylim([mins[1], maxs[1]])
+
+
+    plt.show()
+
 
 
