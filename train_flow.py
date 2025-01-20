@@ -5,20 +5,23 @@ from nflows.distributions import Distribution
 from torch.utils.tensorboard import SummaryWriter
 
 from nflows.flows import Flow
+
+from MA import MA
 from myMAF import MyMaskedAutoregressiveFlow
 from datetime import datetime
 from nflows.distributions.normal import StandardNormal
 from AR import AR
+from myNVP import MySimpleRealNVP
 
 writer = SummaryWriter()
 
-def train_flow(target_dist: Distribution, flow: Flow, n_samples: int, num_epochs: int, batch_size: int, base_name, target_name):
+def train_flow(target_dist: Distribution, flow: Flow, n_samples: int, num_epochs: int, batch_size: int, base_name, target_name, flow_name):
     optimizer = optim.Adam(flow.parameters())
     for epoch in range(num_epochs):
         train = target_dist.sample(num_samples=n_samples, batch_size=batch_size)
         optimizer.zero_grad()
         flow_loss = -flow.log_prob(inputs=train).mean()
-        writer.add_scalar("Loss/train_" + base_name + '_' + target_name + '_' + str(n_samples) + '_' + 'samples' + '_' + datetime.today().strftime('%Y-%m-%d'), flow_loss, epoch)
+        writer.add_scalar("Loss/train_" + flow_name + '_' + base_name + '_' + target_name + '_' + str(n_samples) + '_' + 'samples' + '_' + datetime.today().strftime('%Y-%m-%d'), flow_loss, epoch)
         flow_loss.backward()
         optimizer.step()
         if (epoch + 1) % 100 == 0:
@@ -32,6 +35,13 @@ def make_AR_p(p, n):
                                                               torch.abs(params))
     dist = AR([n], params=params)
     assert (dist.is_stationary())
+    return dist
+
+def make_MA_q(q, n):
+    params = torch.cat([torch.tensor([1.0]), (torch.rand(q) - 0.5) / 2])
+    params = torch.sign(params) * torch.maximum(torch.full_like(params, 0.1),
+                                                torch.abs(params))
+    dist = MA([n], params=params)
     return dist
 
 def compute_metrics(target, flow, n_samples):
@@ -59,10 +69,10 @@ def compute_metrics(target, flow, n_samples):
 if __name__ == "__main__":
     torch.manual_seed(42)
     np.random.seed(42)
-    flow_type = ['MAF']
-    base_distributions = [(StandardNormal, None), (AR, 1), (AR, 2)]
-    target_distributions = [(AR, 1), (AR, 2)]
-    n_samples = [2, 5, 10, 20, 100]
+    flow_type = ['MAF', 'RealNVP']
+    base_distributions = [(StandardNormal, None), (AR, 1), (AR, 2), (MA, 1), (AR, 2)]
+    target_distributions = [(AR, 1), (AR, 2), (MA, 1), (MA, 2)]
+    n_samples = [2, 20, 100]
     for bd in base_distributions:
         for td in target_distributions:
             for ft in flow_type:
@@ -75,16 +85,21 @@ if __name__ == "__main__":
                         base_dist = StandardNormal([ns])
                     elif bd[0] is AR:
                         base_dist = make_AR_p(p=bd[1], n=ns)
+                    elif bd[0] is MA:
+                        base_dist = make_MA_q(q=bd[1], n=ns)
                     if ft == 'MAF':
-                        flow = MyMaskedAutoregressiveFlow(features=ns, hidden_features=100, num_layers=3, num_blocks_per_layer=2, distribution=base_dist)
+                        flow = MyMaskedAutoregressiveFlow(features=ns, hidden_features=20, num_layers=3, num_blocks_per_layer=2, distribution=base_dist)
+                    elif ft == 'RealNVP':
+                        flow = MySimpleRealNVP(features=ns, hidden_features=20, num_layers=3, num_blocks_per_layer=3, distribution=base_dist)
                     if bd[0] is StandardNormal:
                         base_name = 'iid'
                     else:
                         base_name = bd[0].__name__+'_'+str(bd[1])
                     if td[0] is AR:
                         target_dist = make_AR_p(p=td[1], n=ns)
+                    elif td[0] is MA:
+                        target_dist = make_MA_q(q=td[1], n=ns)
                     target_name = td[0].__name__ + '_' + str(td[1])
-
-                    train_flow(target_dist, flow, ns, 100, 100, base_name, target_name)
+                    train_flow(target_dist, flow, ns, 200, 100, base_name, target_name, ft)
 
 

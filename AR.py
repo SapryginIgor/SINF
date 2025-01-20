@@ -12,7 +12,7 @@ def sample_AR_p(nsample, p=1,params=None, decay=0.9):
     else:
         ar_params = params
     arma_process = sm.tsa.ArmaProcess(ar_params)
-    simulated_data = arma_process.generate_sample(nsample=nsample) #time-series
+    simulated_data = arma_process.generate_sample(nsample=nsample, axis=-1) #time-series
     return torch.tensor(simulated_data, dtype=torch.float32)
 
 def compute_covariance(ar_params):
@@ -67,14 +67,18 @@ def true_log_density(params, inputs):
 
 class AR(Distribution):
 
-    def __init__(self, params, shape):
+    def __init__(self, shape, params):
         super().__init__()
         self.params = params
         self._shape = torch.Size(shape)
-        cov_matrix = compute_big_cov_matrix(np.prod(shape), params)
-        self.inv_cov_matrix = torch.tensor(np.linalg.inv(cov_matrix), dtype=torch.float32)
-        self.det_cov_matrix = np.linalg.det(cov_matrix)
-        self.register_buffer("const_log", torch.tensor(0.5*(np.prod(shape)*np.log(2*np.pi)+np.log(self.det_cov_matrix)) , dtype=torch.float64), persistent=False)
+        cov_matrix = compute_big_cov_matrix(np.prod(shape), self.params)
+        self.inv_cov_matrix = torch.linalg.inv(cov_matrix).to(torch.float32)
+        self.det_cov_matrix = torch.linalg.det(cov_matrix)
+        self.register_buffer("const_log", 0.5*(np.prod(shape)*np.log(2*np.pi)+torch.log(self.det_cov_matrix)).to(torch.float64), persistent=False)
+
+    def is_stationary(self):
+        proc = sm.tsa.ArmaProcess(self.params)
+        return proc.isstationary
 
     def _log_prob(self, inputs, context):
         # Note: the context is ignored.
@@ -84,26 +88,16 @@ class AR(Distribution):
                     self._shape, inputs.shape[1:]
                 )
             )
-        # print(inputs[..., None, :].dtype)
-        # print(self.inv_cov_matrix.dtype)
         neg_energy = -0.5 * \
                      torch.matmul(torch.matmul(inputs[..., None, :], self.inv_cov_matrix), inputs[...,None])
-                    # torchutils.sum_except_batch(inputs ** 2, num_batch_dims=1)
+
         res = neg_energy - self.const_log
-        # test = torch.zeros(5)
-        # m = test < 0.5
-        expected = true_log_density(self.params, inputs).reshape(100,1,1)
-        # print(abs(res - expected))
-        assert torch.all(abs(res - expected) < 1)
-        return res
+        expected = true_log_density(self.params, inputs).reshape(inputs.shape[0],1,1)
+        return res.squeeze()
 
     def _sample(self, num_samples, context):
         if context is None:
-            # return torch.randn(num_samples, *self._shape, device=self._log_z.device)
-            samples = torch.zeros((num_samples, np.prod(self._shape)), device = self.const_log.device)
-            for i in range(num_samples):
-                samples[i] = sample_AR_p(np.prod(self._shape), params=self.params)
-            return samples
+            return sample_AR_p((num_samples, np.prod(self._shape)), params=self.params)
         else:
             raise NotImplementedError("context support is not implemented yet")
 
