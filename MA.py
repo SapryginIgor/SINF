@@ -77,7 +77,6 @@ class MA(Distribution):
         else:
             return context.new_zeros(context.shape[0], *self._shape)
 
-
 if __name__ == "__main__":
     ar_params = np.array([1.0, 0.5, 0.4, -0.2])
     cov = None

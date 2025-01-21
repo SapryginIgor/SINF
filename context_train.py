@@ -1,32 +1,54 @@
+from datetime import datetime
+
 import numpy as np
 import torch
+from nflows.distributions.normal import StandardNormal, ConditionalDiagonalNormal
+from nflows.flows import Flow
+from torch import nn
 from torch import optim
-from nflows.distributions import Distribution
 from torch.utils.tensorboard import SummaryWriter
 
-from nflows.flows import Flow
-
+from AR import AR, ConditionalAR
 from MA import MA
 from myMAF import MyMaskedAutoregressiveFlow
-from datetime import datetime
-from nflows.distributions.normal import StandardNormal
-from AR import AR
 from myNVP import MySimpleRealNVP
 
 writer = SummaryWriter()
 
-def train_flow(target_dist: Distribution, flow: Flow, n_samples: int, num_epochs: int, batch_size: int, base_name, target_name, flow_name):
+def create_target_dist(target_config, n_samples):
+    if target_config[0] is AR:
+        p = target_config[1]
+        while True:
+            params = torch.cat([torch.tensor([1.0]), (torch.rand(p) - 0.5)])
+            dist = AR([n_samples], params=params)
+            if dist.is_stationary():
+                break
+    elif target_config[0] is MA:
+        q = target_config[1]
+        params = torch.cat([torch.tensor([1.0]), (torch.rand(q) - 0.5)])
+        dist = MA([n_samples], params=params)
+
+    return dist
+
+
+
+def conditional_train_flow(target_config: tuple, flow: Flow, n_samples: int, num_epochs: int, batch_size: int, base_name, target_name, flow_name):
     optimizer = optim.Adam(flow.parameters())
+    n_cases = 10
     for epoch in range(num_epochs):
-        train = target_dist.sample(num_samples=batch_size)
+        flow_loss = 0
         optimizer.zero_grad()
-        flow_loss = -flow.log_prob(inputs=train).mean()
-        writer.add_scalar("Loss/train_" + flow_name + '_' + base_name + '_' + target_name + '_' + str(n_samples) + '_' + 'samples' + '_' + datetime.today().strftime('%Y-%m-%d'), flow_loss, epoch)
+        for k in range(n_cases):
+            target_dist = create_target_dist(target_config, n_samples)
+            train = target_dist.sample(num_samples=batch_size)
+            flow_loss += -flow.log_prob(inputs=train, context=torch.broadcast_to(target_dist.params, (batch_size, len(target_dist.params)))).mean()
+        flow_loss /= n_cases
+        writer.add_scalar("ContextLoss/train_" + flow_name + '_' + base_name + '_' + target_name + '_' + str(n_samples) + '_' + 'samples' + '_' + datetime.today().strftime('%Y-%m-%d'), flow_loss, epoch)
         flow_loss.backward()
         optimizer.step()
         if (epoch + 1) % 100 == 0:
             print(f"iteration: {epoch}, loss: {flow_loss.data}")
-    print('n_samples: {}, diff: {}, integral: {}, flow_l2: {}, ar_l2: {}'.format(n_samples, *compute_metrics(target_dist, flow, n_samples)))
+    # print('n_samples: {}, diff: {}, integral: {}, flow_l2: {}, ar_l2: {}'.format(n_samples, *compute_metrics(target_dist, flow, n_samples)))
     writer.flush()
 
 def make_AR_p(p, n):
@@ -69,37 +91,38 @@ def compute_metrics(target, flow, n_samples):
 if __name__ == "__main__":
     torch.manual_seed(42)
     np.random.seed(42)
-    flow_type = ['MAF', 'RealNVP']
-    base_distributions = [(StandardNormal, None), (AR, 1), (AR, 2), (MA, 1), (AR, 2)]
+    flow_type = ['MAF']
+    base_distributions = [(ConditionalAR, 1), (ConditionalAR, 2)]
     target_distributions = [(AR, 1), (AR, 2), (MA, 1), (MA, 2)]
     n_samples = [2, 20, 100]
     for bd in base_distributions:
-        for td in target_distributions:
+        for tc in target_distributions:
             for ft in flow_type:
                 for ns in n_samples:
                     if bd[1] and ns <= bd[1]:
                         continue
-                    elif td[1] and ns <= td[1]:
+                    elif tc[1] and ns <= tc[1]:
                         continue
                     if bd[0] is StandardNormal:
                         base_dist = StandardNormal([ns])
-                    elif bd[0] is AR:
-                        base_dist = make_AR_p(p=bd[1], n=ns)
+                    elif bd[0] is ConditionalAR:
+                        base_dist = ConditionalAR(shape=[ns], context_encoder=nn.Linear(tc[1]+1, bd[1]+1))
+                        # base_dist = ConditionalDiagonalNormal(shape=[ns], context_encoder=nn.Linear(tc[1]+1, ns*2))
                     elif bd[0] is MA:
                         base_dist = make_MA_q(q=bd[1], n=ns)
                     if ft == 'MAF':
-                        flow = MyMaskedAutoregressiveFlow(features=ns, hidden_features=20, num_layers=3, num_blocks_per_layer=2, distribution=base_dist)
+                        flow = MyMaskedAutoregressiveFlow(features=ns, hidden_features=20, context_features=tc[1]+1, num_layers=3, num_blocks_per_layer=2, distribution=base_dist)
                     elif ft == 'RealNVP':
                         flow = MySimpleRealNVP(features=ns, hidden_features=20, num_layers=3, num_blocks_per_layer=3, distribution=base_dist)
                     if bd[0] is StandardNormal:
                         base_name = 'iid'
                     else:
                         base_name = bd[0].__name__+'_'+str(bd[1])
-                    if td[0] is AR:
-                        target_dist = make_AR_p(p=td[1], n=ns)
-                    elif td[0] is MA:
-                        target_dist = make_MA_q(q=td[1], n=ns)
-                    target_name = td[0].__name__ + '_' + str(td[1])
-                    train_flow(target_dist, flow, ns, 200, 100, base_name, target_name, ft)
+                    # if tc[0] is AR:
+                    #     target_dist = make_AR_p(p=tc[1], n=ns)
+                    # elif tc[0] is MA:
+                    #     target_dist = make_MA_q(q=tc[1], n=ns)
+                    target_name = tc[0].__name__ + '_' + str(tc[1])
+                    conditional_train_flow(tc, flow, ns, 200, 100, base_name, target_name, ft)
 
 

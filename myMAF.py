@@ -24,7 +24,8 @@ class MyMaskedAutoregressiveFlow(Flow):
         hidden_features,
         num_layers,
         num_blocks_per_layer,
-        distribution=StandardNormal,
+        distribution,
+        context_features=None,
         use_residual_blocks=True,
         use_random_masks=False,
         use_random_permutations=False,
@@ -45,6 +46,7 @@ class MyMaskedAutoregressiveFlow(Flow):
             layers.append(
                 MaskedAffineAutoregressiveTransform(
                     features=features,
+                    context_features=context_features,
                     hidden_features=hidden_features,
                     num_blocks=num_blocks_per_layer,
                     use_residual_blocks=use_residual_blocks,
@@ -56,8 +58,7 @@ class MyMaskedAutoregressiveFlow(Flow):
             )
             if batch_norm_between_layers:
                 layers.append(BatchNorm(features))
-
-        super().__init__(
-            transform=CompositeTransform(layers),
-            distribution=distribution([features]),
-        )
+            super().__init__(
+                transform=CompositeTransform(layers),
+                distribution=distribution
+            )

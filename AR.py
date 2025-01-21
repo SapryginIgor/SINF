@@ -16,35 +16,38 @@ def sample_AR_p(nsample, p=1,params=None, decay=0.9):
     return torch.tensor(simulated_data, dtype=torch.float32)
 
 def compute_covariance(ar_params):
-    sigma2 = ar_params[0]
-    phi = ar_params[1:]
-    p = len(phi)
-    A = torch.zeros((p+1, p+1))
+    sigma2 = torch.atleast_2d(ar_params[...,0])
+    phi = torch.atleast_2d(ar_params[...,1:])
+    p = len(phi[0,:])
+    batch = 1 if len(ar_params.shape) < 2 else len(ar_params)
+    A = torch.zeros((batch, p+1, p+1))
     arr = np.arange(p)
     dist_mtx = abs(arr[None] - arr[...,None])
     for i in range(p):
         for j in range(p):
-            A[i, dist_mtx[i,j]] += phi[j]
-        A[i][i+1] -= 1
-    tmp = [-1]
-    tmp += list(phi)
-    A[p] = torch.tensor(tmp)
-    B = torch.zeros(p+1)
-    B[p] = -sigma2
+            A[:, i, dist_mtx[i,j]] += phi[...,j]
+        A[:, i, i+1] -= 1
+
+    A[:,p] = torch.cat((-torch.ones((batch,1)), phi), dim=-1)
+    B = torch.zeros(batch, p+1)
+    B[:, p] = -sigma2
     gamma = torch.linalg.solve(A=A, B=B)
     return gamma
 
 def compute_big_cov_matrix(n, ar_params):
-    gamma = compute_covariance(ar_params).numpy()
-    p = len(gamma)-1
-    big_gamma = np.zeros(n)
-    big_gamma[:p+1] = gamma
-    phi = np.array(ar_params[1:])
+    gamma = compute_covariance(ar_params)
+    p = len(gamma[0,:])-1
+    batch = 1 if len(ar_params.shape) < 2 else len(ar_params)
+    big_gamma = torch.zeros((batch, n))
+    big_gamma[...,:p+1] = gamma
+    phi = torch.atleast_2d(ar_params[...,1:])
     for i in range(p+1,n):
-        big_gamma[i] = np.dot(phi, big_gamma[i-1:i-1-p:-1])
-    arr = np.arange(n)
-    dist_mtx = np.abs(arr[None] - arr[...,None])
-    return torch.tensor(big_gamma)[dist_mtx]
+        # tmp2 = big_gamma.clone().detach().numpy()[:,i-1:i-1-p:-1]
+        tmp = torch.flip(big_gamma, [-1])[:,n-i-p+1:n-i+1]
+        big_gamma[...,i] = torch.sum(phi * tmp, dim=-1)
+    arr = torch.arange(n)
+    dist_mtx = torch.abs(arr[None] - arr[...,None])
+    return big_gamma[:,dist_mtx]
 
 def true_log_density(params, inputs):
     shape = inputs.shape[1:]
@@ -106,6 +109,57 @@ class AR(Distribution):
             return self.const_log.new_zeros(self._shape)
         else:
             return context.new_zeros(context.shape[0], *self._shape)
+
+class ConditionalAR(Distribution):
+
+    def __init__(self, shape, context_encoder=None):
+        super().__init__()
+        self._shape = torch.Size(shape)
+        if context_encoder is None:
+            self._context_encoder = lambda x: x
+        else:
+            self._context_encoder = context_encoder
+
+    def compute_params(self, context):
+        """Compute the means and log stds form the context."""
+        if context is None:
+            raise ValueError("Context can't be None.")
+
+        params = self._context_encoder(context)
+        if params.shape[0] != context.shape[0]:
+            raise RuntimeError(
+                "The batch dimension of the parameters is inconsistent with the input."
+            )
+        return params
+
+    def _log_prob(self, inputs, context):
+        if inputs.shape[1:] != self._shape:
+            raise ValueError(
+                "Expected input of shape {}, got {}".format(
+                    self._shape, inputs.shape[1:]
+                )
+            )
+        params = self.compute_params(context)
+        params[:,0] = 1.5*params[:,0].sigmoid()
+        params[:,1:] = params[:,1:].tanh()
+
+        cov_matrix = compute_big_cov_matrix(np.prod(self._shape), params)
+        inv_cov_matrix = torch.linalg.inv(cov_matrix).to(torch.float32)
+        det_cov_matrix = torch.linalg.det(cov_matrix)
+        const_log = 0.5*(np.prod(self._shape)*np.log(2*np.pi)+torch.log(det_cov_matrix)).to(torch.float64)
+        neg_energy = -0.5 * \
+                     torch.matmul(torch.matmul(inputs[..., None, :], inv_cov_matrix), inputs[..., None])
+
+        res = neg_energy.squeeze() - const_log
+        # expected = true_log_density(self.params, inputs).reshape(inputs.shape[0], 1, 1)
+        return res
+
+    def _sample(self, num_samples, context):
+        raise NotImplementedError()
+
+
+
+
 
 
 if __name__ == "__main__":
