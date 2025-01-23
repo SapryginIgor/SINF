@@ -42,8 +42,8 @@ def compute_big_cov_matrix(n, ar_params):
     big_gamma[...,:p+1] = gamma
     phi = torch.atleast_2d(ar_params[...,1:])
     for i in range(p+1,n):
-        # tmp2 = big_gamma.clone().detach().numpy()[:,i-1:i-1-p:-1]
-        tmp = torch.flip(big_gamma, [-1])[:,n-i-p+1:n-i+1]
+        # tmp2 = torch.tensor(big_gamma.clone().detach().numpy()[:,i-1:i-1-p:-1].copy())
+        tmp = torch.flip(big_gamma, [-1])[:,n-i:n-i+p]
         big_gamma[...,i] = torch.sum(phi * tmp, dim=-1)
     arr = torch.arange(n)
     dist_mtx = torch.abs(arr[None] - arr[...,None])
