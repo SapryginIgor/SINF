@@ -48,8 +48,8 @@ class MA(Distribution):
         self.params = params
         self._shape = torch.Size(shape)
         cov_matrix = compute_big_cov_matrix(np.prod(shape), self.params)
-        self.inv_cov_matrix = torch.linalg.inv(cov_matrix).to(torch.float32)
-        self.det_cov_matrix = torch.linalg.det(cov_matrix)
+        self.inv_cov_matrix = torch.linalg.inv(cov_matrix).to(torch.float64)
+        self.det_cov_matrix = torch.linalg.det(cov_matrix).to(torch.float64)
         self.register_buffer("const_log",
                              0.5 * (np.prod(shape) * np.log(2 * np.pi) + torch.log(self.det_cov_matrix)).to(
                                  torch.float64), persistent=False)
@@ -112,9 +112,11 @@ class ConditionalMA(Distribution):
         params = self.compute_params(context)
         params[:,0] = params[:,0].exp()
         cov_matrix = compute_big_cov_matrix(np.prod(self._shape), params)
-        inv_cov_matrix = torch.linalg.inv(cov_matrix).to(torch.float32)
-        det_cov_matrix = torch.linalg.det(cov_matrix)
-        const_log = 0.5*(np.prod(self._shape)*np.log(2*np.pi)+torch.log(det_cov_matrix)).to(torch.float64)
+        A = torch.linalg.cholesky(cov_matrix)
+        inv_cov_matrix = torch.linalg.inv(cov_matrix).to(torch.float64)
+        old_det_cov_matrix = torch.clamp(torch.linalg.det(cov_matrix), 1, 1000000).to(torch.float64)
+        det_A_matrix = torch.linalg.det(A)
+        const_log = 0.5*(np.prod(self._shape)*np.log(2*np.pi)+2*torch.log(det_A_matrix)).to(torch.float64)
         neg_energy = -0.5 * \
                      torch.matmul(torch.matmul(inputs[..., None, :], inv_cov_matrix), inputs[..., None])
 
@@ -123,12 +125,17 @@ class ConditionalMA(Distribution):
         return res
 
     def _sample(self, num_samples, context):
-        raise NotImplementedError()
+        params = self.compute_params(context)
+        params[:, 0] = params[:, 0].exp()
+        par = params[0].detach()
+        ma = MA(shape=list(self._shape), params=par)
+        return ma.sample(num_samples=num_samples)
 
 
 
 
 if __name__ == "__main__":
-    ar_params = np.array([1.0, 0.5, 0.4, -0.2])
-    cov = None
-    print(cov)
+    cov_matrix = (compute_big_cov_matrix(8, torch.tensor([1.5, -2.5])))
+    print(cov_matrix)
+    det_cov_matrix = torch.linalg.det(cov_matrix)
+    print(det_cov_matrix)

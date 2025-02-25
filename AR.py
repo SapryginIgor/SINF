@@ -50,10 +50,11 @@ def compute_big_cov_matrix(n, ar_params):
     return big_gamma[:,dist_mtx]
 
 def true_log_density(params, inputs):
-    shape = inputs.shape[1:]
+    params = params[0]
+    shape = inputs.shape[1:][0]
     sigma2 = params[0]
     phi = params[1:]
-    const =  (0.5 * np.prod(shape) * np.log(2 * np.pi * sigma2))
+    const =  (0.5 * shape * torch.log(2 * torch.pi * sigma2))
     s = torch.zeros(inputs.shape[0])
     last = torch.zeros((inputs.shape[0], phi.shape[0]))
     for i in range(np.prod(shape)):
@@ -61,6 +62,20 @@ def true_log_density(params, inputs):
         s -= (inputs[..., i] - mu)**2/(2*sigma2)
         last =  torch.roll(last, 1, dims=1)
         last[:, 0] = inputs[:,i]
+    return s - const
+
+def batched_log_density(params, inputs):
+    shape = inputs.shape[1:]
+    sigma2 = params[0]
+    phi = params[1:]
+    const = (0.5 * np.prod(shape) * np.log(2 * np.pi * sigma2))
+    s = torch.zeros(inputs.shape[0])
+    last = torch.zeros((inputs.shape[0], phi.shape[0]))
+    for i in range(np.prod(shape)):
+        mu = (phi[None] * last).sum(dim=1)
+        s -= (inputs[..., i] - mu) ** 2 / (2 * sigma2)
+        last = torch.roll(last, 1, dims=1)
+        last[:, 0] = inputs[:, i]
     return s - const
 
 
@@ -75,8 +90,8 @@ class AR(Distribution):
         self.params = params
         self._shape = torch.Size(shape)
         cov_matrix = compute_big_cov_matrix(np.prod(shape), self.params)
-        self.inv_cov_matrix = torch.linalg.inv(cov_matrix).to(torch.float32)
-        self.det_cov_matrix = torch.linalg.det(cov_matrix)
+        self.inv_cov_matrix = torch.linalg.inv(cov_matrix).to(torch.float64)
+        self.det_cov_matrix = torch.linalg.det(cov_matrix).to(torch.float64)
         self.register_buffer("const_log", 0.5*(np.prod(shape)*np.log(2*np.pi)+torch.log(self.det_cov_matrix)).to(torch.float64), persistent=False)
 
     def is_stationary(self):
@@ -94,9 +109,9 @@ class AR(Distribution):
         neg_energy = -0.5 * \
                      torch.matmul(torch.matmul(inputs[..., None, :], self.inv_cov_matrix), inputs[...,None])
 
-        res = neg_energy - self.const_log
-        expected = true_log_density(self.params, inputs).reshape(inputs.shape[0],1,1)
-        return res.squeeze()
+        # res = neg_energy - self.const_log
+        expected = true_log_density(self.params[None], inputs).reshape(inputs.shape[0],1,1)
+        return expected.squeeze()
 
     def _sample(self, num_samples, context):
         if context is None:
@@ -143,16 +158,16 @@ class ConditionalAR(Distribution):
         params[:,0] = 1.5*params[:,0].sigmoid()
         params[:,1:] = params[:,1:].tanh()
 
-        cov_matrix = compute_big_cov_matrix(np.prod(self._shape), params)
-        inv_cov_matrix = torch.linalg.inv(cov_matrix).to(torch.float32)
-        det_cov_matrix = torch.linalg.det(cov_matrix)
-        const_log = 0.5*(np.prod(self._shape)*np.log(2*np.pi)+torch.log(det_cov_matrix)).to(torch.float64)
-        neg_energy = -0.5 * \
-                     torch.matmul(torch.matmul(inputs[..., None, :], inv_cov_matrix), inputs[..., None])
+        # cov_matrix = compute_big_cov_matrix(np.prod(self._shape), params)
+        # inv_cov_matrix = torch.linalg.inv(cov_matrix).to(torch.float64)
+        # det_cov_matrix = torch.linalg.det(cov_matrix).to(torch.float64)
+        # const_log = 0.5*(np.prod(self._shape)*np.log(2*np.pi)+torch.log(det_cov_matrix)).to(torch.float64)
+        # neg_energy = -0.5 * \
+                     # torch.matmul(torch.matmul(inputs[..., None, :], inv_cov_matrix), inputs[..., None])
 
-        res = neg_energy.squeeze() - const_log
-        # expected = true_log_density(self.params, inputs).reshape(inputs.shape[0], 1, 1)
-        return res
+        # res = neg_energy.squeeze() - const_log
+        expected = true_log_density(params, inputs).reshape(inputs.shape[0], 1, 1)
+        return expected.squeeze()
 
     def _sample(self, num_samples, context):
         raise NotImplementedError()
@@ -163,6 +178,6 @@ class ConditionalAR(Distribution):
 
 
 if __name__ == "__main__":
-    ar_params = np.array([1.0, 0.5, 0.4, -0.2])
-    cov = compute_big_cov_matrix(10, ar_params)
-    print(cov)
+
+    res = true_log_density(torch.tensor([[1.0,1.0,0.5]]), torch.tensor([[1.0,1.0,1.0]]))
+    print(res)
