@@ -89,10 +89,10 @@ class AR(Distribution):
         super().__init__()
         self.params = params
         self._shape = torch.Size(shape)
-        cov_matrix = compute_big_cov_matrix(np.prod(shape), self.params)
-        self.inv_cov_matrix = torch.linalg.inv(cov_matrix).to(torch.float64)
-        self.det_cov_matrix = torch.linalg.det(cov_matrix).to(torch.float64)
-        self.register_buffer("const_log", 0.5*(np.prod(shape)*np.log(2*np.pi)+torch.log(self.det_cov_matrix)).to(torch.float64), persistent=False)
+        # cov_matrix = compute_big_cov_matrix(np.prod(shape), self.params)
+        # self.inv_cov_matrix = torch.linalg.inv(cov_matrix).to(torch.float64)
+        # self.det_cov_matrix = torch.linalg.det(cov_matrix).to(torch.float64)
+        # self.register_buffer("const_log", 0.5*(np.prod(shape)*np.log(2*np.pi)+torch.log(self.det_cov_matrix)).to(torch.float64), persistent=False)
 
     def is_stationary(self):
         proc = sm.tsa.ArmaProcess(self.params)
@@ -106,8 +106,8 @@ class AR(Distribution):
                     self._shape, inputs.shape[1:]
                 )
             )
-        neg_energy = -0.5 * \
-                     torch.matmul(torch.matmul(inputs[..., None, :], self.inv_cov_matrix), inputs[...,None])
+        # neg_energy = -0.5 * \
+        #              torch.matmul(torch.matmul(inputs[..., None, :], self.inv_cov_matrix), inputs[...,None])
 
         # res = neg_energy - self.const_log
         expected = true_log_density(self.params[None], inputs).reshape(inputs.shape[0],1,1)
@@ -170,6 +170,7 @@ class ConditionalAR(Distribution):
         return expected.squeeze()
 
     def _sample(self, num_samples, context):
+
         raise NotImplementedError()
 
 

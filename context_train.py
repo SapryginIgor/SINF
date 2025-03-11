@@ -15,11 +15,57 @@ from MA import MA, ConditionalMA
 from myMAF import MyMaskedAutoregressiveFlow
 from myNVP import MySimpleRealNVP
 from mpmath import mp, exp,sqrt, mpf
+from nflows.utils import torchutils
 from numba import jit
 import time
 from cubature import cubature
 
 writer = SummaryWriter()
+
+
+
+class DiagNormal(Distribution):
+    """A multivariate Normal with zero mean and unit covariance."""
+
+    def __init__(self, shape, sigma2):
+        super().__init__()
+        self._shape = torch.Size(shape)
+        self.sigma2 = sigma2
+        self.cov = torch.diag(torch.full(self._shape, self.sigma2))
+        self.register_buffer("_log_z",
+                             torch.tensor(0.5 * np.prod(shape) * np.log(2 * np.pi * self.sigma2),
+                                          dtype=torch.float64),
+                             persistent=False)
+
+    def _log_prob(self, inputs, context):
+        # Note: the context is ignored.
+        if inputs.shape[1:] != self._shape:
+            raise ValueError(
+                "Expected input of shape {}, got {}".format(
+                    self._shape, inputs.shape[1:]
+                )
+            )
+        neg_energy = -0.5 * \
+            torchutils.sum_except_batch((inputs ** 2)/(self.sigma2), num_batch_dims=1)
+        return neg_energy - self._log_z
+
+    def _sample(self, num_samples, context):
+        if context is None:
+            return self.sigma2**0.5 * torch.randn(num_samples, *self._shape, device=self._log_z.device)
+        else:
+            # The value of the context is ignored, only its size and device are taken into account.
+            context_size = context.shape[0]
+            samples = torch.randn(context_size * num_samples, *self._shape,
+                                  device=context.device)
+            return torchutils.split_leading_dim(samples, [context_size, num_samples])
+
+    def _mean(self, context):
+        if context is None:
+            return self._log_z.new_zeros(self._shape)
+        else:
+            # The value of the context is ignored, only its size is taken into account.
+            return context.new_zeros(context.shape[0], *self._shape)
+
 
 def create_static_dist(target_config, n_samples):
     if target_config[0] is AR:
@@ -170,6 +216,32 @@ def importance_sampling(flow, dims, base_dist, con, num_samples=100000):
 #     target_l1 = importance_sampling(target, dims,StandardNormal([n_samples]),None )
 #     return flow_l1, target_l1
 
+def compute_kld(target, flow, n_samples, include_context):
+    start = time.time()
+    m = 18
+    if include_context:
+        context = torch.broadcast_to(target.params, (2**m, len(target.params))).to(torch.float64)
+    else:
+        context = None
+    # target_samples1 = target.sample(2**m).to(torch.float64)
+    # target_samples2 = target.sample(2 ** m).to(torch.float64)
+    # flow_samples1 = flow.sample(2 ** m, context=context).to(torch.float64)
+    # flow_samples2 = flow.sample(2 ** m, context=context).to(torch.float64)
+    # tmp = 2*(torch.linalg.norm(target_samples1 - flow_samples1, dim=-1)).mean() \
+    # - torch.linalg.norm(target_samples1 - target_samples2, dim=-1).mean() \
+    # - torch.linalg.norm(flow_samples1 - flow_samples2, dim=-1).mean()
+    # print("energy is:", tmp)
+    samples = target.sample(2 ** m).to(torch.float64)
+    log_p = target.log_prob(samples)
+    tmp = ((log_p - flow.log_prob(samples, context=context)))
+    kld = tmp.mean()
+    print("dim is", n_samples)
+    print("KLD is", kld)
+    print("variance is", ((tmp - kld) ** 2).mean())
+    print("time is: {}".format(time.time() - start))
+
+
+
 metrics_data = []
 
 def conditional_train_flow(target_config, target_dist: Distribution, flow: Flow, n_samples: int, num_epochs: int, batch_size: int, include_context: bool, base_name, target_name, flow_name, need_prefix=True):
@@ -212,13 +284,13 @@ def conditional_train_flow(target_config, target_dist: Distribution, flow: Flow,
         optimizer.step()
         if (epoch + 1) % 100 == 0:
             print(f"iteration: {epoch}, loss: {flow_loss.data}")
-
-    metrics = compute_context_metrics(final_target_dist, flow, n_samples, include_context)
-    print('base: {}, target: {}, flow: {}, dim: {}, flow_l1: {}, target_l1: {}, diff_l1: {}'.format(base_name, target_name, flow_name, n_samples,  *metrics))
-    if need_prefix:
-        metrics_data.append([base_name, target_name, flow_name, n_samples,  *metrics])
-    else:
-        metrics_data.append([*metrics])
+    compute_kld(final_target_dist, flow, n_samples, include_context)
+    # metrics = compute_context_metrics(final_target_dist, flow, n_samples, include_context)
+    # print('base: {}, target: {}, flow: {}, dim: {}, flow_l1: {}, target_l1: {}, diff_l1: {}'.format(base_name, target_name, flow_name, n_samples,  *metrics))
+    # if need_prefix:
+    #     metrics_data.append([base_name, target_name, flow_name, n_samples,  *metrics])
+    # else:
+    #     metrics_data.append([*metrics])
     writer.flush()
 
 def make_AR_p(p, n):
@@ -247,13 +319,13 @@ if __name__ == "__main__":
         torch.manual_seed(81)
         np.random.seed(42)
         flow_type = ['MAF']
-        base_distributions = [(ConditionalAR,2), (ConditionalMA,2), (AR,2), (MA,2),(StandardNormal, None)]
+        base_distributions = [(AR,2), (ConditionalMA,2), (AR,2), (MA,2),(StandardNormal, None)]
         target_distributions = [(AR, 2),(MA, 2)]
         metrics_frame = None
         fixed_base_distributions = {}
         fixed_target_distributions = {}
-        n_samples = [10, 15]
-        for seed in range(5):
+        n_samples = [3]
+        for seed in range(80, 85):
             torch.manual_seed(seed)
             metrics_data.clear()
             for bd in base_distributions:
@@ -294,7 +366,15 @@ if __name__ == "__main__":
                             #         ns, 0,
                             #         *metrics))
                             need_prefix = True if seed==0 else False
-                            conditional_train_flow(tc, target_dist, flow, ns, 300, 100, include_context,base_name, target_name, ft, need_prefix)
+                            # dim = 20
+                            # flow = DiagNormal(shape=[dim], sigma2=3)
+                            # target = DiagNormal(shape=[dim], sigma2=1.5)
+                            # compute_kld(flow=flow,
+                            #             target=target,
+                            #             n_samples=dim,
+                            #             include_context=False)
+                            # exit()
+                            conditional_train_flow(tc, target_dist, flow, ns, 100, 100, include_context,base_name, target_name, ft, need_prefix)
             if not metrics_frame:
                 metrics_frame = pd.DataFrame(metrics_data, columns=['base', 'target', 'flow', 'dim', 'flow_l1_0', 'target_l1_0', 'diff_l1_0'])
             else:
@@ -304,8 +384,8 @@ if __name__ == "__main__":
                 metrics_frame = pd.concat([metrics_frame, tmp], axis=1)
 
 
-metrics_frame.to_csv("many_seeds_conditional_metrics.csv", index=False)
-print(metrics_frame)
+    # metrics_frame.to_csv("many_seeds_conditional_metrics.csv", index=False)
+    # print(metrics_frame)
 
 
 
